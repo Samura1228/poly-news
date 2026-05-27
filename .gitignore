@@ -1,0 +1,27 @@
+# Secrets
+poly-news-bot/.env
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# SQLite
+poly-news-bot/data/
+poly-news-bot/*.db
+poly-news-bot/*.db-journal
+poly-news-bot/*.db-wal
+poly-news-bot/*.db-shm
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
