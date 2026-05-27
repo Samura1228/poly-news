@@ -127,7 +127,7 @@ The included tests cover URL canonicalization, keyword filtering, and the fetche
 
 ## Deployment to Railway
 
-[Railway](https://railway.app) is the easiest way to host this bot — it auto-detects Python via Nixpacks, handles restarts, and provides persistent volumes for SQLite.
+[Railway](https://railway.app) is the easiest way to host this bot — it auto-detects Python via Railpack, handles restarts, and provides persistent volumes for SQLite.
 
 ### Steps
 
@@ -156,7 +156,7 @@ The included tests cover URL canonicalization, keyword filtering, and the fetche
 
    > **CRITICAL:** `DATABASE_PATH=/data/bot.db` must point to the volume mount path. The relative `data/bot.db` (no leading slash) would be wiped on every redeploy.
 
-6. **Deploy.** Railway auto-detects Python via Nixpacks, installs `requirements.txt`, and runs `python bot.py` (see [`railway.toml`](railway.toml:1) and [`nixpacks.toml`](nixpacks.toml:1)).
+6. **Deploy.** Railway auto-detects Python via Railpack (reading `requirements.txt` and `runtime.txt`), installs dependencies, and runs `python bot.py` (see [`railway.toml`](railway.toml:1), [`Procfile`](Procfile:1), and [`runtime.txt`](runtime.txt:1)).
 7. **Verify.** The **Logs** tab should show `"post_init complete"` and `"Scheduled news cycle every 30 minutes"`. The Telegram bot is reachable immediately — send `/start`.
 
 ### Cost note
