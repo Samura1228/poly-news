@@ -57,22 +57,14 @@ def _time_ago(published_at: datetime) -> str:
 
 
 def format_news_item(item: NewsItem) -> str:
-    """Render a NewsItem as a Telegram-safe HTML string."""
+    """Render a NewsItem as a Telegram-safe HTML string (no URL line)."""
     title = _truncate(_strip_html(item.title), _MAX_TITLE)
     summary = _truncate(_strip_html(item.summary or ""), _MAX_SUMMARY)
     source_label = item.source_label or item.source or "source"
     when = _time_ago(item.published_at)
 
-    title_html = f"<b>{html.escape(title)}</b>"
-    body_parts: list[str] = [title_html]
+    body_parts: list[str] = [f"<b>{html.escape(title)}</b>"]
     if summary:
         body_parts.append(html.escape(summary))
-
-    # URL must NOT be html-escaped inside href (it's a URL); but display label is escaped.
-    link_html = (
-        f'🔗 <a href="{html.escape(item.url, quote=True)}">'
-        f"{html.escape(source_label)}</a> • {html.escape(when)}"
-    )
-    body_parts.append("")
-    body_parts.append(link_html)
+    body_parts.append(f"{html.escape(source_label)} • {html.escape(when)}")
     return "\n".join(body_parts)

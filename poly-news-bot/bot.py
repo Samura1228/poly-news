@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-import html
+import functools
 import logging
 import time
 from datetime import datetime, timezone
 
-from telegram import Update
+from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -26,16 +26,12 @@ log = logging.getLogger(__name__)
 
 _START_TIME = time.monotonic()
 _WELCOME = (
-    "👋 <b>Welcome to the Polymarket News Bot</b>\n\n"
-    "I'll send you the latest Polymarket-related news from across the web, "
-    "every {interval} minutes.\n\n"
+    "👋 Welcome! You're subscribed to <b>Polymarket news digests</b>.\n\n"
+    "Every hour I'll send you a short summary of the latest "
+    "Polymarket-related news from across the web.\n\n"
     "<b>Commands</b>\n"
-    "/start — subscribe to updates\n"
-    "/stop — unsubscribe\n"
-    "/status — your subscription status\n"
-    "/sources — list news sources I'm watching\n"
-    "/last — show the 5 most recent news items\n"
-    "/help — show this help\n"
+    "• /stop — unsubscribe\n"
+    "• /ping — check if I'm alive\n"
 )
 
 
@@ -50,19 +46,39 @@ def _configure_logging(level: str) -> None:
     logging.getLogger("telegram.ext.Application").setLevel(logging.INFO)
 
 
+# --- Admin guard ---
+
+
+def admin_only(func):
+    """Silently drop non-admin invocations."""
+
+    @functools.wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        settings: Settings = context.application.bot_data["settings"]
+        chat = update.effective_chat
+        if (
+            not settings.admin_chat_id
+            or not chat
+            or chat.id != settings.admin_chat_id
+        ):
+            return
+        return await func(update, context)
+
+    return wrapper
+
+
 # --- Command handlers ---
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     storage: Storage = context.application.bot_data["storage"]
-    settings: Settings = context.application.bot_data["settings"]
     chat = update.effective_chat
     user = update.effective_user
     if not chat:
         return
     username = (user.username if user else None) or (user.full_name if user else None)
     newly = await storage.add_subscriber(chat.id, username)
-    msg = _WELCOME.format(interval=settings.poll_interval_minutes)
+    msg = _WELCOME
     if not newly:
         msg = "✅ You're already subscribed.\n\n" + msg
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
@@ -84,59 +100,35 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    storage: Storage = context.application.bot_data["storage"]
-    settings: Settings = context.application.bot_data["settings"]
-    chat = update.effective_chat
-    if not chat:
-        return
-    info = await storage.get_subscriber_info(chat.id)
-    delivered = await storage.count_delivered(chat.id)
-    active = await storage.count_active_subscribers()
-    if info is None:
-        text = (
-            "📊 <b>Status</b>\n"
-            "Not subscribed yet. Send /start to begin.\n"
-            f"Active subscribers: {active}"
-        )
-    else:
-        state = "active ✅" if info.get("active") else "inactive ⏸"
-        joined = info.get("joined_at") or "—"
-        text = (
-            "📊 <b>Your status</b>\n"
-            f"State: {state}\n"
-            f"Joined: <code>{html.escape(str(joined))}</code>\n"
-            f"Messages delivered: <b>{delivered}</b>\n"
-            f"Poll interval: every <b>{settings.poll_interval_minutes}</b> min\n"
-            f"Total active subscribers: <b>{active}</b>"
-        )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uptime_s = int(time.monotonic() - _START_TIME)
+    h, rem = divmod(uptime_s, 3600)
+    m, s = divmod(rem, 60)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    await update.message.reply_text(
+        f"pong 🏓\nuptime: {h:02d}h{m:02d}m{s:02d}s\nutc: {now}"
+    )
 
 
+@admin_only
 async def cmd_sources(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import html as html_mod
+
     fetchers = context.application.bot_data["fetchers"]
     lines = ["📡 <b>Enabled news sources</b>"]
     for f in fetchers:
         lines.append(
-            f"• <b>{html.escape(f.source_label)}</b> "
-            f"<code>({html.escape(f.name)})</code>"
+            f"• <b>{html_mod.escape(f.source_label)}</b> "
+            f"<code>({html_mod.escape(f.name)})</code>"
         )
     lines.append("")
     lines.append(f"Total: <b>{len(fetchers)}</b>")
-    # Telegram messages cap at 4096 chars — chunk if needed.
     text = "\n".join(lines)
     for chunk in _chunk_text(text, 3800):
         await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
 
 
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    settings: Settings = context.application.bot_data["settings"]
-    await update.message.reply_text(
-        _WELCOME.format(interval=settings.poll_interval_minutes),
-        parse_mode=ParseMode.HTML,
-    )
-
-
+@admin_only
 async def cmd_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     storage: Storage = context.application.bot_data["storage"]
     args = context.args or []
@@ -157,21 +149,11 @@ async def cmd_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(
                 format_news_item(item),
                 parse_mode=ParseMode.HTML,
-                disable_web_page_preview=False,
+                disable_web_page_preview=True,
             )
             await asyncio.sleep(0.05)
         except Exception as e:  # noqa: BLE001
             log.warning("cmd_last send error: %s", e)
-
-
-async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    uptime_s = int(time.monotonic() - _START_TIME)
-    h, rem = divmod(uptime_s, 3600)
-    m, s = divmod(rem, 60)
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    await update.message.reply_text(
-        f"pong 🏓\nuptime: {h:02d}h{m:02d}m{s:02d}s\nutc: {now}"
-    )
 
 
 def _chunk_text(text: str, limit: int) -> list[str]:
@@ -187,6 +169,33 @@ def _chunk_text(text: str, limit: int) -> list[str]:
 # --- Lifecycle hooks ---
 
 
+async def _set_command_menus(application: Application, settings: Settings) -> None:
+    """Public menu: /start /stop /ping. Admin chat additionally: /sources /last."""
+    public = [
+        BotCommand("start", "Subscribe to news digests"),
+        BotCommand("stop", "Unsubscribe"),
+        BotCommand("ping", "Health check"),
+    ]
+    admin = public + [
+        BotCommand("sources", "List enabled news sources (admin)"),
+        BotCommand("last", "Show recent news items (admin)"),
+    ]
+    try:
+        await application.bot.set_my_commands(
+            public, scope=BotCommandScopeDefault()
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("set_my_commands (default) failed: %s", e)
+    if settings.admin_chat_id:
+        try:
+            await application.bot.set_my_commands(
+                admin,
+                scope=BotCommandScopeChat(chat_id=settings.admin_chat_id),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("set_my_commands (admin) failed: %s", e)
+
+
 async def _post_init(application: Application) -> None:
     settings: Settings = application.bot_data["settings"]
     storage = Storage(settings.database_path)
@@ -195,6 +204,8 @@ async def _post_init(application: Application) -> None:
 
     application.bot_data["storage"] = storage
     application.bot_data["fetchers"] = fetchers
+
+    await _set_command_menus(application, settings)
 
     scheduler = NewsScheduler(application, storage, fetchers, settings)
     scheduler.start()
@@ -222,13 +233,13 @@ def build_application(settings: Settings) -> Application:
     )
     app.bot_data["settings"] = settings
 
+    # Public commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("stop", cmd_stop))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("sources", cmd_sources))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("last", cmd_last))
     app.add_handler(CommandHandler("ping", cmd_ping))
+    # Admin-only (guard applied via @admin_only)
+    app.add_handler(CommandHandler("sources", cmd_sources))
+    app.add_handler(CommandHandler("last", cmd_last))
     return app
 
 

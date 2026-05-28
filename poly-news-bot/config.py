@@ -38,10 +38,17 @@ class Settings:
     telegram_bot_token: str
 
     # Polling
-    poll_interval_minutes: int = 30
+    poll_interval_minutes: int = 60
     startup_delay_seconds: int = 30
     backfill_window_hours: int = 24
     max_items_per_cycle: int = 10
+
+    # Admin / digest
+    admin_chat_id: Optional[int] = None
+    anthropic_api_key: Optional[str] = None
+    anthropic_model: str = "claude-3-5-haiku-latest"
+    max_news_age_hours: int = 6
+    max_digest_messages: int = 3
 
     # Storage
     database_path: str = "./data/bot.db"
@@ -81,9 +88,21 @@ class Settings:
             raise RuntimeError(
                 "TELEGRAM_BOT_TOKEN is required. Copy .env.example to .env and set it."
             )
+
+        admin_raw = _get_str("ADMIN_CHAT_ID")
+        admin_chat_id: Optional[int] = None
+        if admin_raw:
+            try:
+                admin_chat_id = int(admin_raw)
+            except ValueError:
+                admin_chat_id = None
+
+        anthropic_key = _get_str("ANTHROPIC_API_KEY")
+        anthropic_key_opt: Optional[str] = anthropic_key if anthropic_key else None
+
         return cls(
             telegram_bot_token=token,
-            poll_interval_minutes=_get_int("POLL_INTERVAL_MINUTES", 30),
+            poll_interval_minutes=_get_int("POLL_INTERVAL_MINUTES", 60),
             startup_delay_seconds=_get_int("STARTUP_DELAY_SECONDS", 30),
             backfill_window_hours=_get_int("BACKFILL_WINDOW_HOURS", 24),
             max_items_per_cycle=_get_int("MAX_ITEMS_PER_CYCLE", 10),
@@ -106,4 +125,9 @@ class Settings:
             ),
             polymarket_youtube_channel_id=_get_str("POLYMARKET_YOUTUBE_CHANNEL_ID"),
             log_level=_get_str("LOG_LEVEL", "INFO").upper(),
+            admin_chat_id=admin_chat_id,
+            anthropic_api_key=anthropic_key_opt,
+            anthropic_model=_get_str("ANTHROPIC_MODEL", "claude-3-5-haiku-latest") or "claude-3-5-haiku-latest",
+            max_news_age_hours=_get_int("MAX_NEWS_AGE_HOURS", 6),
+            max_digest_messages=_get_int("MAX_DIGEST_MESSAGES", 3),
         )

@@ -1,4 +1,4 @@
-"""APScheduler wiring: poll every N minutes + an immediate startup catchup."""
+"""APScheduler wiring: hourly poll + startup catchup + daily prune."""
 from __future__ import annotations
 
 import logging
@@ -13,6 +13,7 @@ from config import Settings
 from dispatcher import fanout
 from fetchers import BaseFetcher
 from storage import Storage
+from summarizer import make_digests
 from utils.http import build_session
 
 log = logging.getLogger(__name__)
@@ -33,7 +34,8 @@ class NewsScheduler:
         self.scheduler = AsyncIOScheduler(timezone="UTC")
 
     async def _run_cycle(self) -> None:
-        log.info("=== news cycle starting ===")
+        cycle_started_at = datetime.now(timezone.utc)
+        log.info("=== news cycle starting (%s) ===", cycle_started_at.isoformat())
         try:
             async with build_session(
                 user_agent=self.settings.http_user_agent,
@@ -42,17 +44,50 @@ class NewsScheduler:
                 items = await collect_all_news(
                     session,
                     self.fetchers,
-                    max_items=None,  # cap is per-user; we keep all for storage
+                    max_items=None,
                 )
-            new_count = await self.storage.upsert_news(items)
-            log.info(
-                "cycle persisted: fetched=%d new_global=%d", len(items), new_count
+
+            # Freshness filter — anything older than MAX_NEWS_AGE_HOURS is dropped.
+            cutoff = cycle_started_at - timedelta(
+                hours=self.settings.max_news_age_hours
             )
+            fresh: list = []
+            for it in items:
+                pa = it.published_at
+                if pa is None:
+                    continue
+                if pa.tzinfo is None:
+                    pa = pa.replace(tzinfo=timezone.utc)
+                if pa >= cutoff:
+                    fresh.append(it)
+
+            log.info(
+                "cycle: fetched=%d fresh=%d (within %dh)",
+                len(items),
+                len(fresh),
+                self.settings.max_news_age_hours,
+            )
+
+            # Persist fresh items.
+            new_count = await self.storage.upsert_news(fresh)
+            log.info("cycle persisted: new_global=%d", new_count)
+
+            if not fresh:
+                log.info("no fresh items this cycle — nothing to summarize")
+                return
+
+            digests = await make_digests(fresh, self.settings)
+            log.info("generated %d digest(s)", len(digests))
+
+            if not digests:
+                return
+
             await fanout(
                 self.application.bot,
                 self.storage,
-                backfill_window_hours=self.settings.backfill_window_hours,
-                max_items_per_cycle=self.settings.max_items_per_cycle,
+                digests,
+                fresh,
+                cycle_started_at,
             )
         except Exception as e:  # noqa: BLE001
             log.exception("news cycle crashed: %s", e)

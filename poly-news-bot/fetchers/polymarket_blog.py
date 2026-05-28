@@ -77,6 +77,15 @@ class PolymarketBlogFetcher(BaseFetcher):
             text = (a.get_text() or "").strip()
             if not text or len(text) < 8:
                 continue
+            image_url = None
+            try:
+                img_tag = a.find("img")
+                if img_tag is not None:
+                    src = img_tag.get("src") or img_tag.get("data-src")
+                    if isinstance(src, str) and src.startswith("http"):
+                        image_url = src
+            except Exception:  # noqa: BLE001
+                image_url = None
             items.append(
                 NewsItem(
                     id_hash=news_hash(full),
@@ -87,6 +96,7 @@ class PolymarketBlogFetcher(BaseFetcher):
                     published_at=datetime.now(timezone.utc),
                     summary=None,
                     author=None,
+                    image_url=image_url,
                 )
             )
         return items

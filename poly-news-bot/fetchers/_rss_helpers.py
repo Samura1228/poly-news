@@ -13,6 +13,7 @@ from dateutil import parser as date_parser
 
 from utils.hashing import news_hash
 from utils.http import fetch_bytes
+from utils.image_extractor import extract_image_from_feed_entry
 
 from .base import NewsItem
 
@@ -83,6 +84,10 @@ def feed_to_items(
         if not link or not title:
             continue
         try:
+            try:
+                img = extract_image_from_feed_entry(entry)
+            except Exception:  # noqa: BLE001
+                img = None
             item = NewsItem(
                 id_hash=news_hash(link),
                 title=title,
@@ -92,6 +97,7 @@ def feed_to_items(
                 published_at=_parse_dt(entry),
                 summary=_entry_summary(entry),
                 author=_entry_author(entry),
+                image_url=img,
             )
             items.append(item)
         except Exception as e:  # noqa: BLE001

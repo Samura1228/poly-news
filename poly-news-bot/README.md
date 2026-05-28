@@ -1,6 +1,6 @@
 # Polymarket News Telegram Bot
 
-A Python Telegram bot that aggregates **Polymarket-related news** from ~25 public sources (Google News, Bing News, Reddit, Hacker News, the Polymarket blog, crypto outlets like CoinDesk / CoinTelegraph / Decrypt / The Block / Blockworks, the Polymarket X account via Nitter, YouTube, GitHub releases, and more) and pushes new items to every subscriber **every 30 minutes**.
+A Python Telegram bot that aggregates **Polymarket-related news** from ~25 public sources (Google News, Bing News, Reddit, Hacker News, the Polymarket blog, crypto outlets like CoinDesk / CoinTelegraph / Decrypt / The Block / Blockworks, the Polymarket X account via Nitter, YouTube, GitHub releases, and more) and pushes a short, AI-generated **digest** (1–3 messages) to every subscriber **every hour**.
 
 Architecture details live in [`ARCHITECTURE.md`](../ARCHITECTURE.md:1).
 
@@ -9,9 +9,10 @@ Architecture details live in [`ARCHITECTURE.md`](../ARCHITECTURE.md:1).
 ## Features
 
 - 📰 **~25 sources out of the box** — most need no API key.
-- 🔁 **Per-user deduplication** — no duplicates across sources or bot restarts.
-- ⏱ **30-minute polling cycle** with per-fetcher timeout + error isolation.
-- 🧪 **Backfill cap** — new subscribers get up to 10 items from the last 24h, not months of history.
+- 🧠 **Claude-powered hourly digest** — 1–3 natural-language summary messages per cycle (with a built-in local fallback if no API key is set).
+- 🖼 **Images** — each digest sends a representative image when one is available.
+- ⏱ **Hourly polling cycle** with per-fetcher timeout + error isolation; only items from the last 6 hours are summarized.
+- 🔁 **Per-user gating** — each subscriber receives the cycle's digest exactly once.
 - 🛡 **Idempotent SQLite storage** — survives restarts.
 - 🧱 **Pluggable fetchers** — add a new source in ~30 lines.
 
@@ -36,7 +37,7 @@ cp .env.example .env
 python bot.py
 ```
 
-Then, in Telegram, find your bot and send `/start`. You'll receive Polymarket news every 30 minutes.
+Then, in Telegram, find your bot and send `/start`. You'll receive a Polymarket news digest every hour.
 
 ---
 
@@ -55,9 +56,13 @@ All configuration is via env vars (loaded from `.env`). See [`.env.example`](.en
 | Var | Default | Purpose |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | — | **Required.** From @BotFather. |
-| `POLL_INTERVAL_MINUTES` | `30` | How often to fetch & deliver news. |
-| `BACKFILL_WINDOW_HOURS` | `24` | Brand-new subscribers see items from the past N hours, no further. |
-| `MAX_ITEMS_PER_CYCLE` | `10` | Hard cap per subscriber per cycle. Prevents flooding. |
+| `POLL_INTERVAL_MINUTES` | `60` | How often to fetch & deliver news. |
+| `ADMIN_CHAT_ID` | — | Telegram chat_id of the admin. Only this user sees `/sources` & `/last`. Find via @userinfobot. |
+| `ANTHROPIC_API_KEY` | — | Optional. Enables Claude-generated digests. Without it, the bot uses a local rule-based fallback. |
+| `ANTHROPIC_MODEL` | `claude-3-5-haiku-latest` | Anthropic model name. |
+| `MAX_NEWS_AGE_HOURS` | `6` | Items older than this are dropped (not summarized). |
+| `MAX_DIGEST_MESSAGES` | `3` | Hard cap on digest messages per cycle. |
+| `BACKFILL_WINDOW_HOURS` | `24` | Legacy; reserved for future use. |
 | `DATABASE_PATH` | `./data/bot.db` | SQLite database location. |
 | `NITTER_MIRRORS` | `nitter.net,nitter.poast.org,nitter.privacydev.net` | Nitter mirrors to try in order. Mirrors die often — keep this updated. |
 | `DISABLED_SOURCES` | (empty) | Comma-separated slugs to skip (e.g. `medium_polymarket,defillama`). |
@@ -81,15 +86,22 @@ Leave any of these blank to disable the corresponding source — the bot starts 
 
 ## Bot commands
 
+Public (everyone):
+
 | Command | What it does |
 |---|---|
 | `/start` | Subscribe to updates. |
 | `/stop` | Unsubscribe (data is retained; `/start` again to resume). |
-| `/status` | Your subscription state, delivery count, next-poll info. |
-| `/sources` | List of every enabled news source with its slug. |
-| `/help` | Show the welcome & command list. |
-| `/last [N]` | Show the N (default 5, max 20) most recent news items. |
 | `/ping` | Health check (uptime + UTC clock). |
+
+Admin-only (visible & usable only by the chat_id in `ADMIN_CHAT_ID`):
+
+| Command | What it does |
+|---|---|
+| `/sources` | List of every enabled news source with its slug. |
+| `/last [N]` | Show the N (default 5, max 20) most recent news items. |
+
+> `/help` and `/status` have been removed in favour of the simpler hourly-digest UX.
 
 ---
 
@@ -139,7 +151,12 @@ The included tests cover URL canonicalization, keyword filtering, and the fetche
 
    ```
    TELEGRAM_BOT_TOKEN=<your real token from BotFather>
-   POLL_INTERVAL_MINUTES=30
+   POLL_INTERVAL_MINUTES=60
+   ADMIN_CHAT_ID=6840070959
+   ANTHROPIC_API_KEY=
+   ANTHROPIC_MODEL=claude-3-5-haiku-latest
+   MAX_NEWS_AGE_HOURS=6
+   MAX_DIGEST_MESSAGES=3
    BACKFILL_WINDOW_HOURS=24
    MAX_ITEMS_PER_CYCLE=50
    DATABASE_PATH=/data/bot.db
@@ -154,10 +171,12 @@ The included tests cover URL canonicalization, keyword filtering, and the fetche
    GITHUB_TOKEN=
    ```
 
+   > `ANTHROPIC_API_KEY` is **optional**. When unset (or the API call fails), the bot falls back to a local rule-based digest that still groups items into 1–3 messages.
+
    > **CRITICAL:** `DATABASE_PATH=/data/bot.db` must point to the volume mount path. The relative `data/bot.db` (no leading slash) would be wiped on every redeploy.
 
 6. **Deploy.** Railway auto-detects Python via Railpack (reading `requirements.txt` and `runtime.txt`), installs dependencies, and runs `python bot.py` (see [`railway.toml`](railway.toml:1), [`Procfile`](Procfile:1), and [`runtime.txt`](runtime.txt:1)).
-7. **Verify.** The **Logs** tab should show `"post_init complete"` and `"Scheduled news cycle every 30 minutes"`. The Telegram bot is reachable immediately — send `/start`.
+7. **Verify.** The **Logs** tab should show `"post_init complete"` and `"scheduler started: poll every 60 min"`. The Telegram bot is reachable immediately — send `/start`.
 
 ### Cost note
 
@@ -232,7 +251,7 @@ CMD ["python", "bot.py"]
 ## Troubleshooting
 
 - **Bot doesn't reply** → check `TELEGRAM_BOT_TOKEN` is set; check logs for "post_init complete".
-- **No news arriving** → wait one full poll cycle (default 30 min, or `STARTUP_DELAY_SECONDS` for the first run); check `/sources`; check logs for `[fetcher_name] error: ...`.
+- **No news arriving** → wait one full poll cycle (default 60 min, or `STARTUP_DELAY_SECONDS` for the first run); only items from the last `MAX_NEWS_AGE_HOURS` are summarized; check logs for `[fetcher_name] error: ...`.
 - **Nitter is down** → all 3 default mirrors die from time to time. Update `NITTER_MIRRORS` in `.env` with fresh hosts from <https://status.d420.de/>, or set `TWITTER_BEARER_TOKEN`.
 - **Polymarket blog returns 0 items** → the bot tries 4 RSS candidates then falls back to scraping `polymarket.com/blog`. If both fail, the blog source silently contributes nothing (other sources continue).
 - **Rate limit hits** → if you have a lot of subscribers, the dispatcher already paces at ~20 msg/sec and respects Telegram's `RetryAfter`. For >1000 subscribers, consider lowering `MAX_ITEMS_PER_CYCLE` to spread load.

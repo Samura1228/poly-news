@@ -82,6 +82,14 @@ class MediastackFetcher(BaseFetcher):
             author_raw = post.get("author")
             author = author_raw.strip() if isinstance(author_raw, str) and author_raw.strip() else None
 
+            image_url = None
+            try:
+                raw_img = post.get("image")
+                if isinstance(raw_img, str) and raw_img.startswith("http"):
+                    image_url = raw_img
+            except Exception:  # noqa: BLE001
+                image_url = None
+
             items.append(
                 NewsItem(
                     id_hash=news_hash(link),
@@ -92,6 +100,7 @@ class MediastackFetcher(BaseFetcher):
                     published_at=published_at.astimezone(timezone.utc),
                     summary=summary,
                     author=author,
+                    image_url=image_url,
                 )
             )
 

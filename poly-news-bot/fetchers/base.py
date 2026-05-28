@@ -24,6 +24,7 @@ class NewsItem:
     published_at: datetime
     summary: Optional[str] = None
     author: Optional[str] = None
+    image_url: Optional[str] = None
 
     # Backwards-compat alias used in some places
     @property

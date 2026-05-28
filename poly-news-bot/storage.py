@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS subscribers (
     username    TEXT,
     joined_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     active      INTEGER NOT NULL DEFAULT 1,
-    stopped_at  TIMESTAMP
+    stopped_at  TIMESTAMP,
+    last_digest_sent_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS news (
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS news (
     published_at  TIMESTAMP NOT NULL,
     summary       TEXT,
     author        TEXT,
+    image_url     TEXT,
     first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_news_first_seen ON news(first_seen_at);
@@ -46,6 +48,12 @@ CREATE TABLE IF NOT EXISTS seen_news (
 );
 CREATE INDEX IF NOT EXISTS idx_seen_chat ON seen_news(chat_id);
 """
+
+# Migrations for older DBs (Railway volume) that pre-date new columns.
+_MIGRATIONS = [
+    ("news", "image_url", "TEXT"),
+    ("subscribers", "last_digest_sent_at", "TIMESTAMP"),
+]
 
 
 def _to_iso(dt: datetime) -> str:
@@ -70,6 +78,15 @@ def _from_iso(raw: str | None) -> datetime:
         return datetime.now(timezone.utc)
 
 
+def _maybe_from_iso(raw: str | None) -> Optional[datetime]:
+    if raw is None or raw == "":
+        return None
+    try:
+        return _from_iso(raw)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class Storage:
     """Async SQLite wrapper for the bot's persistent state."""
 
@@ -83,7 +100,26 @@ class Storage:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(_SCHEMA_SQL)
         await self._conn.commit()
+        await self._run_migrations()
         log.info("storage connected at %s", self.db_path)
+
+    async def _run_migrations(self) -> None:
+        """Idempotent ALTER TABLE migrations for older DBs."""
+        for table, column, coltype in _MIGRATIONS:
+            try:
+                await self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"
+                )
+                await self._conn.commit()
+                log.info("migration: added %s.%s (%s)", table, column, coltype)
+            except aiosqlite.OperationalError as e:
+                msg = str(e).lower()
+                if "duplicate column" in msg or "already exists" in msg:
+                    log.debug("migration: %s.%s already present", table, column)
+                else:
+                    log.warning("migration failed for %s.%s: %s", table, column, e)
+            except Exception as e:  # noqa: BLE001
+                log.warning("unexpected migration error %s.%s: %s", table, column, e)
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -183,6 +219,23 @@ class Storage:
             row = await cur.fetchone()
         return int(row["n"]) if row else 0
 
+    async def get_last_digest_sent_at(self, chat_id: int) -> Optional[datetime]:
+        async with self.conn.execute(
+            "SELECT last_digest_sent_at FROM subscribers WHERE chat_id = ?",
+            (chat_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return _maybe_from_iso(row["last_digest_sent_at"])
+
+    async def update_last_digest_sent_at(self, chat_id: int, dt: datetime) -> None:
+        await self.conn.execute(
+            "UPDATE subscribers SET last_digest_sent_at = ? WHERE chat_id = ?",
+            (_to_iso(dt), chat_id),
+        )
+        await self.conn.commit()
+
     # ----- News -----
 
     async def upsert_news(self, items: Iterable[NewsItem]) -> int:
@@ -200,6 +253,7 @@ class Storage:
                 _to_iso(it.published_at),
                 it.summary,
                 it.author,
+                it.image_url,
             )
             for it in items
         ]
@@ -208,8 +262,8 @@ class Storage:
         before = await self._news_count()
         await self.conn.executemany(
             "INSERT OR IGNORE INTO news "
-            "(news_hash, title, url, source, source_label, published_at, summary, author) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(news_hash, title, url, source, source_label, published_at, summary, author, image_url) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         await self.conn.commit()
@@ -238,7 +292,7 @@ class Storage:
         since_iso = _to_iso(since_dt)
         sql = """
             SELECT n.news_hash, n.title, n.url, n.source, n.source_label,
-                   n.published_at, n.summary, n.author
+                   n.published_at, n.summary, n.author, n.image_url
             FROM news n
             LEFT JOIN seen_news s
               ON s.news_hash = n.news_hash AND s.chat_id = ?
@@ -253,7 +307,7 @@ class Storage:
     async def get_recent_news(self, limit: int = 5) -> list[NewsItem]:
         sql = """
             SELECT news_hash, title, url, source, source_label,
-                   published_at, summary, author
+                   published_at, summary, author, image_url
             FROM news
             ORDER BY published_at DESC
             LIMIT ?
@@ -264,6 +318,12 @@ class Storage:
 
     @staticmethod
     def _row_to_item(row: aiosqlite.Row) -> NewsItem:
+        # image_url column may be missing on older rows before migration:
+        image_url = None
+        try:
+            image_url = row["image_url"]
+        except (IndexError, KeyError):
+            image_url = None
         return NewsItem(
             id_hash=row["news_hash"],
             title=row["title"],
@@ -273,6 +333,7 @@ class Storage:
             published_at=_from_iso(row["published_at"]),
             summary=row["summary"],
             author=row["author"],
+            image_url=image_url,
         )
 
     # ----- Maintenance -----
