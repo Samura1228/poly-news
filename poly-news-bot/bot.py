@@ -4,8 +4,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-import time
-from datetime import datetime, timezone
 
 from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, Update
 from telegram.constants import ParseMode
@@ -24,14 +22,12 @@ from utils.formatter import format_news_item
 
 log = logging.getLogger(__name__)
 
-_START_TIME = time.monotonic()
 _WELCOME = (
     "👋 Welcome! You're subscribed to <b>Polymarket news digests</b>.\n\n"
     "Every hour I'll send you a short summary of the latest "
     "Polymarket-related news from across the web.\n\n"
     "<b>Commands</b>\n"
     "• /stop — unsubscribe\n"
-    "• /ping — check if I'm alive\n"
 )
 
 
@@ -100,16 +96,6 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
-async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    uptime_s = int(time.monotonic() - _START_TIME)
-    h, rem = divmod(uptime_s, 3600)
-    m, s = divmod(rem, 60)
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    await update.message.reply_text(
-        f"pong 🏓\nuptime: {h:02d}h{m:02d}m{s:02d}s\nutc: {now}"
-    )
-
-
 @admin_only
 async def cmd_sources(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     import html as html_mod
@@ -170,15 +156,16 @@ def _chunk_text(text: str, limit: int) -> list[str]:
 
 
 async def _set_command_menus(application: Application, settings: Settings) -> None:
-    """Public menu: /start /stop /ping. Admin chat additionally: /sources /last."""
+    """Public menu: /start /stop. Admin chat additionally: /sources /last."""
     public = [
-        BotCommand("start", "Subscribe to news digests"),
+        BotCommand("start", "Subscribe to Polymarket news digests"),
         BotCommand("stop", "Unsubscribe"),
-        BotCommand("ping", "Health check"),
     ]
-    admin = public + [
-        BotCommand("sources", "List enabled news sources (admin)"),
-        BotCommand("last", "Show recent news items (admin)"),
+    admin = [
+        BotCommand("start", "Subscribe to Polymarket news digests"),
+        BotCommand("stop", "Unsubscribe"),
+        BotCommand("sources", "List enabled news sources"),
+        BotCommand("last", "Show the last digest"),
     ]
     try:
         await application.bot.set_my_commands(
@@ -236,7 +223,6 @@ def build_application(settings: Settings) -> Application:
     # Public commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("stop", cmd_stop))
-    app.add_handler(CommandHandler("ping", cmd_ping))
     # Admin-only (guard applied via @admin_only)
     app.add_handler(CommandHandler("sources", cmd_sources))
     app.add_handler(CommandHandler("last", cmd_last))

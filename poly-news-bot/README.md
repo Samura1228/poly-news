@@ -92,7 +92,6 @@ Public (everyone):
 |---|---|
 | `/start` | Subscribe to updates. |
 | `/stop` | Unsubscribe (data is retained; `/start` again to resume). |
-| `/ping` | Health check (uptime + UTC clock). |
 
 Admin-only (visible & usable only by the chat_id in `ADMIN_CHAT_ID`):
 
@@ -101,7 +100,7 @@ Admin-only (visible & usable only by the chat_id in `ADMIN_CHAT_ID`):
 | `/sources` | List of every enabled news source with its slug. |
 | `/last [N]` | Show the N (default 5, max 20) most recent news items. |
 
-> `/help` and `/status` have been removed in favour of the simpler hourly-digest UX.
+> `/help`, `/status`, and `/ping` have been removed in favour of the simpler hourly-digest UX.
 
 ---
 
