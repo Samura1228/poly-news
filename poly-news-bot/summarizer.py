@@ -17,6 +17,7 @@ import math
 import re
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlparse
 
 from config import Settings
 from fetchers.base import NewsItem
@@ -62,23 +63,95 @@ def _truncate(text: str, limit: int) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
-def _unique_image_urls(items: list[NewsItem]) -> list[str]:
+# Common tracking parameters that should never affect image identity.
+# (We strip the entire query in normalization anyway; this is belt-and-suspenders
+# in case future changes reintroduce query-aware comparisons.)
+_TRACKING_PARAMS = frozenset(
+    {
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "utm_id",
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid",
+        "igshid",
+        "ref",
+        "ref_src",
+    }
+)
+
+
+def _normalize_image_url(url: str) -> str:
+    """Return a canonical form of *url* for deduplication.
+
+    Drops query string and fragment, lowercases scheme + host, and strips a
+    trailing slash from the path. Size/resize query params (e.g. ``?w=400``)
+    therefore never differentiate two URLs that point at the same underlying
+    image.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:  # noqa: BLE001
+        return url.strip().lower()
+    scheme = (parsed.scheme or "").lower()
+    netloc = (parsed.netloc or "").lower()
+    path = parsed.path or ""
+    if len(path) > 1 and path.endswith("/"):
+        path = path.rstrip("/")
+    return f"{scheme}://{netloc}{path}"
+
+
+def _unique_image_urls(items: list[NewsItem]) -> list[tuple[str, str]]:
+    """Return ``[(normalized, original), ...]`` in first-seen order.
+
+    Dedup happens against the *normalized* URL but we preserve the original
+    full-quality URL so it can be sent to Telegram unchanged.
+    """
     seen: set[str] = set()
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
     for it in items:
         url = (it.image_url or "").strip()
-        if url and url.startswith("http") and url not in seen:
-            seen.add(url)
-            out.append(url)
+        if not url or not url.startswith("http"):
+            continue
+        norm = _normalize_image_url(url)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append((norm, url))
     return out
 
 
-def _assign_images(n_digests: int, images: list[str]) -> list[Optional[str]]:
-    """Assign one image (or None) to each digest, in order."""
-    out: list[Optional[str]] = []
-    for i in range(n_digests):
-        out.append(images[i] if i < len(images) else None)
-    return out
+def _assign_unique_images(
+    digests: list["Digest"], items: list[NewsItem]
+) -> None:
+    """Mutate each :class:`Digest` in *digests* to set a unique ``image_url``.
+
+    Walks the digests in order: digest ``i`` gets ``unique_images[i]`` if it
+    exists, otherwise ``image_url`` is set to ``None`` (sent as text-only).
+    Applies to both the Claude path and the local-fallback path.
+    """
+    unique = _unique_image_urls(items)
+    for i, d in enumerate(digests):
+        d.image_url = unique[i][1] if i < len(unique) else None
+
+    log.info(
+        "image_assignment: %d items provided, %d unique normalized images, "
+        "%d digests; assigned=%s",
+        len(items),
+        len(unique),
+        len(digests),
+        [bool(d.image_url) for d in digests],
+    )
+
+    # Belt-and-suspenders: no duplicate non-None image_urls across the cycle.
+    non_none = [d.image_url for d in digests if d.image_url]
+    assert len(non_none) == len(set(non_none)), (
+        f"duplicate image_urls detected across digests: {non_none}"
+    )
 
 
 def _enforce_budget(text: str, has_image: bool) -> str:
@@ -102,12 +175,8 @@ def local_digest(items: list[NewsItem], settings: Settings) -> list[Digest]:
     ]
     chunks = chunks[:n]
 
-    images = _unique_image_urls(items)
-    image_assignment = _assign_images(len(chunks), images)
-
     digests: list[Digest] = []
-    for idx, chunk in enumerate(chunks):
-        img = image_assignment[idx]
+    for chunk in chunks:
         lines: list[str] = ["📰 <b>Polymarket Hourly Digest</b>", ""]
         for it in chunk:
             title = _truncate(_strip_html(it.title), 220)
@@ -117,8 +186,12 @@ def local_digest(items: list[NewsItem], settings: Settings) -> list[Digest]:
                 lines.append(html.escape(summary))
             lines.append("")
         text = "\n".join(lines).rstrip()
-        text = _enforce_budget(text, has_image=bool(img))
-        digests.append(Digest(text=text, image_url=img))
+        # Image is assigned afterwards; budget will be re-checked below.
+        digests.append(Digest(text=text, image_url=None))
+
+    _assign_unique_images(digests, items)
+    for d in digests:
+        d.text = _enforce_budget(d.text, has_image=bool(d.image_url))
     return digests
 
 
@@ -238,16 +311,15 @@ async def claude_summarize(
     digest_texts = _parse_claude_json(raw)
     digest_texts = digest_texts[:max_msgs]
 
-    images = _unique_image_urls(items)
-    image_assignment = _assign_images(len(digest_texts), images)
-
     digests: list[Digest] = []
-    for idx, raw_text in enumerate(digest_texts):
-        img = image_assignment[idx]
+    for raw_text in digest_texts:
         # Claude is asked for plain text, so escape it as HTML body.
         text = html.escape(raw_text)
-        text = _enforce_budget(text, has_image=bool(img))
-        digests.append(Digest(text=text, image_url=img))
+        digests.append(Digest(text=text, image_url=None))
+
+    _assign_unique_images(digests, items)
+    for d in digests:
+        d.text = _enforce_budget(d.text, has_image=bool(d.image_url))
     return digests
 
 
